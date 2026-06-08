@@ -1,0 +1,123 @@
+%% Description
+
+% This code is used to obtain blade chord and twist for specified
+% conditions. The method used is from "Modeling and Optimal Design of Small
+% HAWT Blades for Analyzing the Starting Torque Behavior" (Chaudhary et al.)
+% The outputs give the flattest Cp-TSR curve in ASHES. This code also
+% estimates wind distribution and mechanical power output.
+% All units in meters/seconds/kilograms
+
+clear;              
+clc;                        % clear any previous variables in MATLAB workspace
+format long;                % expresses numbers in terms of decimals rather than fractions
+
+%% Arrays Definition
+
+phi = [];                   % inflow angle
+chord = [];                 % chord length of each element
+twist = [];                 % blade twist of each element
+Position = [];              % distance from blade root of to end of each element
+Ftanr = [];                 % tangential force to estimate power
+
+%% Input Variables
+
+airfoil = 'SD 7062';        % airfoil type
+TSR = 6;                    % design tip speed ratio
+windSpeed = 10;             % stall wind speed
+R = 0.75;                    % max radius of blade (full length from hub centre to tip)
+alpha = 7;                  % optimal angle of incidence, degrees
+liftC = 1.1;                % lift coefficient at alpha from airfoiltools.com
+dragC = 0.02;               % drag coefficient at alpha from airfoiltools.com
+bladeN = 3;                 % number of blades
+rho = 1.225;                % air density
+mu = 1.81/10^5;             % air viscosity
+N = 50;                     % number of blade elements to iterate over
+
+%% Code (Chaudhary et al) 
+
+sectionLength = R/N;        % length of each element in radius direction
+omega = TSR*windSpeed/R;    % angular velocity (constant for whole length of blade)
+
+i = 1;
+for r = sectionLength:sectionLength:R           % loop for every blade element
+    
+    localTSR = omega*r/windSpeed;   % tip speed ratio at element
+    phi(i) = (2/3)*(atan(1/localTSR));  % inflow angle at element
+    G = ((bladeN/2)*((r/R)-1))/((r/R)*sin(phi(i))); % variable to calculate tip loss
+    X = exp(G); % variable to calculate tip loss
+    tipLoss = (2/pi)*(acos(X)); % Prandtl's tip loss factor
+    M = 8*tipLoss*r*pi*sin(phi(i))/(bladeN*liftC);  % variable to calculate chord length
+    W = (1-(localTSR*tan(phi(i))))/(tan(phi(i))+localTSR);  % variable to calculate chord length
+    chord(i) = M*W; % chord length at element
+
+    twist(i) = phi(i)*180/pi - alpha;   % blade twist at element
+    Position(i) = r;    % distance from hub centre to start of element
+
+    i = i + 1;  % increase i for next loop
+
+end
+
+%% Reynolds number calculation (for ASHES input)
+
+totalChord = 0;
+for j = 1:1:i-1
+    totalChord = totalChord+chord(j); % sum chord values from all elements
+end
+
+avChord = totalChord/j; % find average chord length
+minChord = chord(j);    % find minimum chord length (chord on last element)
+
+Re = rho*avChord*windSpeed/mu;  % Reynolds number calculation
+
+%% Wind speed distribution (Weibull distribution)
+
+k = 2.8; % parameter in Weibull equation
+A = 6; % parameter in Weibull equation
+prob = [];  % array for probability
+windS = []; % array for wind speed
+n = 1;
+for v = 0:0.1:16 % calculate Weibull probability at varying wind speeds
+    p1 = (k/A)*(v/A)^(k-1); % first part of Weibull equation
+    p2 = exp(-((v/A)^k)); % second part of Weibull equation
+    prob(n) = p1*p2*100; % full Weibull equation
+    windS(n) = v;   % take the wind speed as x axis
+    n = n+1;
+end
+
+%plot(windS,prob); % Use this to plot the Weibull distribution
+%title('Probability (%) against wind speed (m/s)')
+
+%% Power estimation (Colin Anderson method)
+
+Power = [];    % array for power output
+Speed = [];    % array for wind speed
+z = 1;
+for windSpeed2 = 0:0.1:12   % do loop for every wind speed
+    i = 1;
+    omega = TSR*windSpeed2/R;   % recalculate TSR
+    for r = sectionLength:sectionLength:R      % calculate tangent force at each element
+        a = (omega*r*tan(phi(i))/windSpeed2)+1; % induction factor
+        Vr1 = (windSpeed2*(1-a))^2;
+        Vr2 = (omega*-1*r)^2;
+        Vr = sqrt(Vr1+Vr2);     % resultant velocity
+        K = (liftC*sin(phi(i)))-(dragC*cos(phi(i)));
+        Ftan = 0.5*rho*(Vr^2)*chord(i)*sectionLength*K; % tangent force
+        Ftanr(i) = Ftan*r;  % tangent force times r
+        i = i + 1;
+    end
+    Speed(z) = windSpeed2;  % put wind speed values to array for x axis
+    SumFtanr = sum(Ftanr);  % sum of tangent force for all blade element
+    Power(z) = bladeN*omega*SumFtanr;   % power equation
+    z = z + 1;
+end
+
+plot(Speed,Power);  % use this to plot power output against wind speed
+title('Power (W) against wind speed (m/s)');
+
+%% Tabulation of outputs
+
+Position = Position.';
+Chord = chord.';
+Twist = twist.';
+
+Data = table(Position, Twist, Chord); % use this for ASHES input

@@ -1,0 +1,173 @@
+clear;              
+clc;                        % clear any previous variables in MATLAB workspace
+format long;                % expresses numbers in terms of decimals rather than fractions
+
+%% Arrays Definition
+
+a = [];                     % induction factor
+aprime = [];
+phi = [];                   % inflow angle
+Chord = [];                 % chord length of each element
+localSolidity = [];         % solidity of each element
+Twist = [];                 % blade twist of each element
+newTwist = [];              % second twist formula from powerpoint
+Position = [];              % distance from blade root of to end of each element
+Iterations = [];            % how many iterations before phi converges
+aFinal = [];                % check final induction factor for each element
+phiFinal = [];              % check final inflow angle for each element
+axialF = [];                % axial force on each element
+tanF = [];                  % tangential force on each element
+
+%% Input Variables
+
+aInit = 0.33;               % set initial induction factor to 0.33
+apInit = 0.00;
+TSR = 6;                    % optimal TSR from paper (YARA, CHANGE) 5
+windSpeed = 10;             % stall wind speed
+R = 0.8;                   % max radius of blade 0.25
+N = 50;                     % number of elements to iterate over
+alpha = 7;                  % angle of incidence in degrees (YARA) 8, 9
+liftC = 1.1;               % lift coefficient from airfoiltools.com 0.9473 or 0.5258 or 0.9735, 0.85
+dragC = 0.02;               % drag coefficient from airfoiltools.com
+bladeN = 3;                 % number of blades
+allowedError = 0.001;       % allowed error for phi convergence
+sectionLength = R/N;        % length of each element in radius direction
+omega = TSR*windSpeed/R;    % to calculate tangential velocity
+rho = 1.225;                % air density
+rootD = 0.035;              % root diameter
+airfoil = 'SD 7062';
+
+%% Core code: Iteration to find inflow angle (phi) - Glauert Method
+
+i = 1; 
+for r = sectionLength:sectionLength:R   % loop for each blade element
+
+    % reset arrays
+    a = [];
+    aprime = [];
+    aprime(1) = apInit;
+    a(1) = aInit;
+    phi = [];
+
+    % formulas from book
+    localTSR = omega*r/windSpeed;   % find TSR at each element
+    Chord(i) = 16*pi*(R^2)/(9*bladeN*liftC*r*(TSR^2));
+    %Chord(i) = (8*pi*r/(bladeN*liftC))*(1-cos(phi(n)));
+    localSolidity(i) = bladeN*Chord(i)/(2*pi*(r/R));
+
+    % initial calculation
+    phi(1) = atan((1-a(1))/(localTSR*(1+aprime(1))));   % first value of phi
+    %disp(phi(1));
+    Cx = (liftC*cos(phi(1)))+(dragC*sin(phi(1)));
+    Cy = (liftC*sin(phi(1)))-(dragC*cos(phi(1)));
+    Z = localSolidity(i)*Cx/(4*sin(phi(1))^2);
+    a(2) = Z/(Z+1);     % second value of a
+    M = localSolidity(i)*Cy/(4*sin(phi(1))*cos(phi(1)));
+    aprime(2) = (M/(1-M));
+    %disp(aprime(2))
+    phi(2) = atan((1-a(2))/(localTSR*(1+aprime(2))));   % second value of phi
+    %disp(phi(2));
+
+    n = 2; % since a and phi is at second value
+    while(abs(phi(n)-phi(n-1)) > allowedError) % loop until phi converges
+        Cx = (liftC*cos(phi(n)))+(dragC*sin(phi(n)));
+        Cy = (liftC*sin(phi(n)))-(dragC*cos(phi(n)));
+        Z = localSolidity(i)*Cx/(4*sin(phi(n))^2);
+        a(n+1) = Z/(Z+1);   % find the next value of a
+        M = localSolidity(i)*Cy/(4*sin(phi(n))*cos(phi(n)));
+        aprime(n+1) = (M/(1-M)); % find next value of a prime
+        phi(n+1) = atan((1-a(n+1))/(localTSR*(1+aprime(n+1))));   % find the next value of phi
+        n = n + 1; % increase n
+    end
+    Iterations(i) = n; % check how many times did it loop
+    aFinal(i) = a(n); % check final induction factor at each element
+    phiFinal(i) = phi(n); % check final inflow angle at each element
+
+	%TESTING - Calculating Tip Loss Correction Factor
+    Q = (2/pi).*(acos(exp(((bladeN./2).*(1-(sectionLength./R)))./((sectionLength./R).*cos(phi)))));
+
+    % calculate aerodynamic forces at each element
+    Vr = sqrt((windSpeed*(1-a(n)))^2+(omega*r)^2);      % resultant velocity
+    axialF(i) = Q*(0.5*rho*(Vr^2)*Chord(i)*sectionLength*(liftC*cos(phi(n))+(dragC*sin(phi(n))))); % includes drag + Tip Loss Factor
+    tanF(i) = Q*(0.5*rho*(Vr^2)*Chord(i)*sectionLength*(liftC*sin(phi(n))-(dragC*cos(phi(n))))); % includes drag + Tip Loss Factor(Considering whether it should be applied to whole equation or not)
+    tanFr(i) = tanF(i)*r;
+    Twist(i) = phi(n)*180/pi - alpha;      % Twist formula 1 (depends on iteration)
+    newTwistR(i) = 2/(3*TSR*(r/R)) - (alpha*pi/180);    % Twist formula 2 (doesn't depend on iteration)
+    newTwist(i) = newTwistR(i)*180/pi;  % change radians to degrees
+    Position(i) = r;    % distance of element from root
+
+    i = i + 1;  % increase i after each loop
+end
+
+% calculate aerodynamic forces for the whole turbine
+axialT = sum(axialF, 2)*bladeN;         % axial thrust overall
+shaftT = sum(tanFr, 2)*bladeN;          % shaft torque overall
+power = sum(tanFr, 2)*bladeN*omega;     % power overall
+
+%% Correct twist and set where the blade starts from root
+
+for j = 1:1:i-1
+    if Twist(j) < 0     % if twist is negative, set to zero
+        Twist(j) = 0;
+    end
+    if newTwist(j) < 0      % do same thing for second twist formula
+        %newTwist(j) = 0;
+    end
+    if Chord(j)/R > 0.5     % if chord length is more than half of radius, set to root diameter
+        Chord(j) = rootD;
+        Twist(j) = 0;   % also set the twists to zero since its just root
+        newTwist(j) = 0;
+    end
+end
+
+%% Tabulate (to be changed to ASHES format)
+
+% change data from columns to rows
+Position = Position.';
+ChordLength = Chord.';
+BladeTwist = Twist.';
+NewTwist = newTwist.';
+aFinal = aFinal.';
+phiFinal = phiFinal.';
+
+% compile data in a table
+Data = table(Position, NewTwist, ChordLength);
+
+%% === DISPLAYING BLADE PARAMETERS UNDER ASHES FORMATTING ===
+
+
+% Displaying ASHES headings under correct and reproducable formatting
+disp('airfoil:  ')
+disp(airfoil)
+disp('Number of blade nodes: ')
+disp(bladeN)
+disp('initial induction factor: ')
+disp(aInit)
+disp('optimal TSR from paper: ')
+disp(TSR)
+disp('stall wind speed: ')
+disp(windSpeed)
+disp('max radius of blade: ')
+disp(R)
+disp('number of elements to iterate over: ')
+disp(N)
+disp('angle of incidence in degrees: ')
+disp(alpha)
+disp('lift coefficient from airfoiltools.com 0.9473 or 0.5258 or 0.9735, 0.85: ')
+disp(liftC)
+disp('allowed error for phi convergence: ')
+disp(allowedError)
+disp('length of each element in radius direction: ')
+disp(sectionLength)
+disp('omega: ')
+disp(omega)
+disp('air density: ')
+disp(rho)
+disp('root diameter: ')
+disp(rootD)
+
+%% Notes
+
+% this code includes drag
+% please decide which twist formula should be used. decided. may want to
+% change chord formula. there are some unnessecary variables

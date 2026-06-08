@@ -1,0 +1,80 @@
+# MATLAB code for BEM. still in testing
+
+clear;
+clc;
+format long;
+
+%% Arrays Definition
+
+a = [];                     % induction factor
+phi = [];                   % inflow angle
+Chord = [];                 % chord length of each element
+localSolidity = [];         % solidity of each element
+Twist = [];                 % twist of each element
+Position = [];              % distance from blade root of each element
+Iterations = [];            % how many iterations before phi converges
+aFinal = [];                % check final induction factor for each element
+phiFinal = [];              % check final inflow angle for each element
+
+%% Input Variables
+
+aInit = 0.33;               % set initial induction factor to 0.33
+TSR = 5;                    % optimal TSR from paper (YARA, CHANGE) 5
+windSpeed = 10;             % stall wind speed
+R = 0.25;                   % max radius of blade 0.25
+N = 50;                     % number of elements to iterate over
+alpha = 8;                  % angle of incidence degrees (YARA) 8
+liftC = 0.5258;             % lift coefficient from airfoiltools.com 0.9473 or 0.5258 or 0.9735
+bladeN = 3;                 % number of blades
+allowedError = 0.001;       % allowed error for phi convergence
+sectionLength = R/N;        % length of each element in radius direction
+omega = TSR*windSpeed/R;    % to calculate tangential velocity
+
+%% Core code: Iteration to find inflow angle (phi)
+
+i = 1; 
+for r = sectionLength:sectionLength:R
+
+    % reset arrays
+    a = [];
+    a(1) = aInit;
+    phi = [];
+
+    % formulas from book
+    localTSR = omega*r/windSpeed;
+    Chord(i) = 16*pi*(R^2)/(9*bladeN*liftC*r*(TSR^2));
+    localSolidity(i) = bladeN*Chord(i)/(2*pi*r);
+
+    % initial calculation
+    phi(1) = atan((1-a(1))/localTSR);
+    F = localSolidity(i)*liftC/(4*sin(phi(1))*tan(phi(1)));
+    a(2) = F/(1+F);
+    phi(2) = atan((1-a(2))/localTSR);
+
+    n = 2;
+    while(abs(phi(n)-phi(n-1)) > allowedError) % loop until phi converges
+        F = localSolidity(i)*liftC/(4*sin(phi(n))*tan(phi(n)));
+        a(n+1) = F/(1+F);
+        phi(n+1) = atan((1-a(n+1))/localTSR);
+        n = n + 1;
+    end
+    Iterations(i) = n; % check how many times did it loop
+    aFinal(i) = a(n); % check final induction factor at each element
+    phiFinal(i) = phi(n); % check final inflow angle at each element
+
+    Twist(i) = phi(n)*180/pi - alpha;
+    Position(i) = r;
+
+    i = i + 1;
+end
+
+%% Tabulation
+
+Position = Position.';
+ChordLength = Chord.';
+BladeTwist = Twist.';
+
+Data = table(Position, ChordLength, BladeTwist);
+
+
+ 
